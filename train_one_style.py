@@ -1,14 +1,19 @@
+# 导入系统库
 import os
 import sys
 import time
 import functools
+from datetime import datetime
 
+# 导入第三方库
 import numpy as np
 import tensorflow as tf
 
+# 导入自己的脚本
 import set_params
 from tools import utils, model_net, vgg_tool
 
+# vgg_net需要提取的网络名
 STYLE_LAYERS = ('relu1_1', 'relu2_1', 'relu3_1', 'relu4_1', 'relu5_1')
 CONTENT_LAYER = 'relu4_2'
 
@@ -18,55 +23,40 @@ def _tensor_size(tensor):
     return functools.reduce(mul, (d.value for d in tensor.get_shape()[1:]), 1)
 
 
-def map_function(filename):
-    image_string = tf.read_file(filename)
-    image = tf.image.decode_image(image_string)
-    image.set_shape([None, None, None])  # 防止image没有shape而报错
-    image = tf.image.resize_images(image, (args.content_image_size, args.content_image_size), method=2)
-    image = tf.image.random_flip_left_right(image)
-    image = tf.image.random_flip_up_down(image)
-    # image = tf.cond(image.get_shape()[2] == 1, lambda: tf.image.grayscale_to_rgb(image), lambda: image)
-    # image = tf.image.grayscale_to_rgb(image)
-    # image = (tf.cast(image, tf.float32) - 127.5) / 128
-    return image
-
-
 def main():
-    if str(args.gpu_device):  # 指定gpu设备
+    # 指定训练设备
+    if str(args.gpu_device):
         os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu_device)
-
+    # 获取风格图像的特征图五张
     style_image = utils.get_img(args.style_image)
     style_features = model_net.get_style_features(args.vgg_path, style_image)
-    # model_net.get_content_features(
-    #     args.vgg_path, args.content_image_size, args.content_weight, style_features, args.style_weight,
-    #     args.batch_size, args.tv_weight, args.learning_rate, args.max_epochs
-    # )
+
     content_shape = (args.batch_size, args.content_image_size, args.content_image_size, 3)
     content_features = {}
-    with tf.Graph().as_default(), tf.Session() as sess:
 
-        # dataset = tf.data.Dataset.from_tensor_slices(train_images)
-        # dataset = dataset.shuffle(100000)
-        # dataset = dataset.map(map_function, num_parallel_calls=6)
-        # dataset = dataset.batch(args.batch_size)
-        # dataset = dataset.repeat()
-        # iterator = dataset.make_one_shot_iterator()
-        # next_element = iterator.get_next()
+    with tf.Session() as sess:
+        learning_rate = tf.placeholder(tf.float32, name="learning_rate")
 
         x_content = tf.placeholder(tf.float32, content_shape, name="x_content")
         x_pre = vgg_tool.preprocess(x_content)
-        content_net = vgg_tool.net(args.vgg_path, x_pre)  # 不经过生成网络
+        # 不经过生成网络得到特征图的值
+        content_net = vgg_tool.net(args.vgg_path, x_pre)
         content_features[CONTENT_LAYER] = content_net[CONTENT_LAYER]
 
-        preds = model_net.transform_net(x_content / 255.0)
+        # 经过生成网络获取生成的图片
+        # preds = model_net.transform_net(x_content / 255.0)
+        preds = model_net.transform_net_keras(x_content / 255.)
         preds_pre = vgg_tool.preprocess(preds)
-
         net = vgg_tool.net(args.vgg_path, preds_pre)  # 经过生成网络
+
+        # 计算内容图的size, 风格图有除以.size
         content_size = _tensor_size(content_features[CONTENT_LAYER]) * args.batch_size
         assert _tensor_size(content_features[CONTENT_LAYER]) == _tensor_size(net[CONTENT_LAYER])
+        # 计算内容图的loss
         content_loss = args.content_weight * (2 * tf.nn.l2_loss(
             net[CONTENT_LAYER] - content_features[CONTENT_LAYER]) / content_size)
 
+        # 计算风格图每一个feature的loss
         style_loss = []
         for style_layer in STYLE_LAYERS:
             layer = net[style_layer]
@@ -79,7 +69,7 @@ def main():
             style_loss.append(2 * tf.nn.l2_loss(grams - style_gram) / style_gram.size)
         style_loss = args.style_weight * functools.reduce(tf.add, style_loss) / args.batch_size
 
-        # total variation denoising
+        # total variation denoising, 计算tv loss
         tv_y_size = _tensor_size(preds[:, 1:, :, :])
         tv_x_size = _tensor_size(preds[:, :, 1:, :])
         y_tv = tf.nn.l2_loss(preds[:, 1:, :, :] - preds[:, :content_shape[1] - 1, :, :])
@@ -87,36 +77,75 @@ def main():
         tv_loss = args.tv_weight * 2 * (x_tv / tv_x_size + y_tv / tv_y_size) / args.batch_size
 
         loss = content_loss + style_loss + tv_loss
+        tf.summary.scalar('losses/content_loss', content_loss)
+        tf.summary.scalar('losses/style_loss', style_loss)
+        tf.summary.scalar('losses/tv_loss', tv_loss)
+        tf.summary.scalar('losses/total_loss', loss)
+        tf.summary.scalar('learning_rate', learning_rate)
 
-        train_step = tf.train.AdamOptimizer(args.learning_rate).minimize(loss)
+        train_step = tf.train.AdamOptimizer(learning_rate).minimize(loss)
+
+        # 创建日志保存目录
+        subdir = datetime.strftime(datetime.now(), '%Y%m%d-%H%M%S')
+        output_dir = os.path.join(os.path.expanduser(args.output_dir), subdir + "_" + args.style_name)
+        if not os.path.isdir(output_dir):
+            os.makedirs(output_dir)
+        model_dir = os.path.join(output_dir, 'save_models')
+        if not os.path.isdir(model_dir):
+            os.makedirs(model_dir)
+        # utils.write_arguments_to_file(args, os.path.join(output_dir, 'arguments.txt'))
+
         sess.run(tf.local_variables_initializer())
         sess.run(tf.global_variables_initializer())
+        saver = tf.train.Saver(max_to_keep=2)
+        merged = tf.summary.merge_all()
+        summary_writer = tf.summary.FileWriter(output_dir, sess.graph)
+
+        train_images = utils.get_files(args.train_path)
+        file_nums = len(train_images)
+        file_count = 0
         global_step = 0
-        saver = tf.train.Saver()
-        train_images = utils._get_files(args.train_path)
-        mod = len(train_images) % args.batch_size
-        if mod > 0:
-            print("Train set has been trimmed slightly..")
-            train_images = train_images[:-mod]
         for epoch in range(args.max_epochs):
-            num_examples = len(train_images)
-            iterations = 0
-            while iterations < args.epoch_size:
+            if args.learning_rate > 0.0:
+                lr = args.learning_rate
+            else:
+                lr = utils.get_learning_rate_from_file(args.learning_rate_file, epoch)
+
+            if lr <= 0:
+                return False
+            batch_number = 0
+            while batch_number <= args.epoch_size:
                 start_time = time.time()
-                curr = iterations * args.batch_size
+                curr = file_count * args.batch_size
                 step = curr + args.batch_size
-                X_batch = np.zeros(content_shape, dtype=np.float32)
+                if step > file_nums:
+                    file_count = 0
+                    curr = file_count * args.batch_size
+                    step = curr + args.batch_size
+                x_batch = np.zeros(content_shape, dtype=np.float32)
                 for j, img_p in enumerate(train_images[curr:step]):
-                    X_batch[j] = utils.get_img(
-                        img_p, (args.content_image_size, args.content_image_size, 3)).astype(np.float32)
-                # X_batch = sess.run(next_element)
-                feed_dict = {x_content: X_batch}
-                loss_, _ = sess.run([loss, train_step], feed_dict=feed_dict)
+                    x_batch[j] = utils.get_img(
+                        img_p, (args.content_image_size, args.content_image_size)).astype(np.float32)
+                feed_dict = {x_content: x_batch, learning_rate: lr}
+                if batch_number % 100 == 0:
+                    loss_, _, summary_str_ = sess.run([loss, train_step, merged], feed_dict=feed_dict)
+                    summary_writer.add_summary(summary_str_, global_step)
+                else:
+                    loss_, _ = sess.run([loss, train_step], feed_dict=feed_dict)
                 run_time = time.time() - start_time
-                print(global_step, loss_, run_time)
-                iterations += 1
+                sys.stdout.write(
+                    "\repoch: {:d}\tglobal_step: {:d}\ttotal_loss: {:f}\trun_time: {:f}".format(
+                        epoch, global_step, loss_, run_time))
+                file_count += 1
+                batch_number += 1
                 global_step += 1
-            saver.save(sess, "./save_model/wave.ckpt-{}".format(global_step))
+            print("save model...")
+            checkpoint_path = os.path.join(model_dir, 'model-%s.ckpt' % args.style_name)
+            saver.save(sess, checkpoint_path, global_step=global_step, write_meta_graph=False)
+            metagraph_filename = os.path.join(model_dir, 'model-%s.meta' % args.style_name)
+            if not os.path.exists(metagraph_filename):
+                print('Saving metagraph')
+                saver.export_meta_graph(metagraph_filename)
 
 
 if __name__ == '__main__':

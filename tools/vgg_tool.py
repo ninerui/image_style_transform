@@ -39,8 +39,8 @@ def net(data_path, input_image):
         'conv5_1', 'relu5_1', 'conv5_2', 'relu5_2', 'conv5_3', 'relu5_3', 'conv5_4', 'relu5_4'
     )
     data = scipy.io.loadmat(data_path)
-    mean = data["normalization"][0][0][0]
-    mean_pixel = np.mean(mean, axis=(0, 1))
+    # mean = data["normalization"][0][0][0]
+    # mean_pixel = np.mean(mean, axis=(0, 1))
     weights = data["layers"][0]
 
     net = {}

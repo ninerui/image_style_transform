@@ -2,6 +2,7 @@ import functools
 
 import numpy as np
 import tensorflow as tf
+from tensorflow import keras
 
 from tools import vgg_tool
 
@@ -10,17 +11,16 @@ CONTENT_LAYER = 'relu4_2'
 
 
 def get_style_features(vgg_path, style_target):
-    style_shape = (1,) + style_target.shape
+    style_shape = (1,) + style_target.shape  # 风格图片的shape
     style_features = {}
-    with tf.Graph().as_default(), tf.Session() as sess:
+    with tf.Session() as sess:
         style_image = tf.placeholder(tf.float32, style_shape, "style_image")
-        style_image_pre = vgg_tool.preprocess(style_image)
+        style_image_pre = vgg_tool.preprocess(style_image)  # 减去vgg网络处理图片时的均值
         net = vgg_tool.net(vgg_path, style_image_pre)
         for layer in STYLE_LAYERS:
             features = sess.run(net[layer], feed_dict={style_image: [style_target]})
             features = np.reshape(features, (-1, features.shape[3]))
-            # print(features.shape)
-            gram = np.matmul(features.T, features) / features.size
+            gram = np.matmul(features.T, features) / features.size  # 避免出现太多浮点数, 减小之后的计算
             style_features[layer] = gram
     return style_features
 
@@ -30,12 +30,35 @@ def _tensor_size(tensor):
     return functools.reduce(mul, (d.value for d in tensor.get_shape()[1:]), 1)
 
 
-def get_content_features(vgg_path, content_image_size, content_weight, style_features, style_weight, batch_size,
-                         tv_weight, learning_rate, max_epochs):
-    content_shape = (batch_size, content_image_size, content_image_size, 3)
-    content_features = {}
+def conv2d_bn_keras(x, filter, filter_size, strides, padding, activation, kernel_init):
+    x = keras.layers.Conv2D(
+        filter, filter_size, strides, padding=padding, activation=activation, kernel_initializer=kernel_init)(x)
+    return keras.layers.BatchNormalization()(x)
 
-    return
+
+def conv_tranpose_kreas(x, filter, filter_size, strides, padding, activation, kernel_init):
+    x = keras.layers.Conv2DTranspose(
+        filter, filter_size, strides, padding=padding, activation=activation, kernel_initializer=kernel_init)(x)
+    return keras.layers.BatchNormalization()(x)
+
+
+def residual_block_keras(input, filter, filter_size, strides, padding, activation, kernel_init):
+    tmp = conv2d_bn_keras(input, filter, filter_size, strides, padding, activation, kernel_init)
+    return input + conv2d_bn_keras(tmp, filter, filter_size, strides, padding, None, kernel_init)
+
+
+def transform_net_keras(image, activation=tf.nn.leaky_relu, kernel_init=tf.initializers.he_normal()):
+    conv1 = conv2d_bn_keras(image, 32, 9, 1, "same", activation, kernel_init)
+    conv2 = conv2d_bn_keras(conv1, 64, 3, 2, "same", activation, kernel_init)
+    conv3 = conv2d_bn_keras(conv2, 128, 3, 2, "same", activation, kernel_init)
+    resid1 = residual_block_keras(conv3, 128, 3, 1, "same", activation, kernel_init)
+    resid2 = residual_block_keras(resid1, 128, 3, 1, "same", activation, kernel_init)
+    resid3 = residual_block_keras(resid2, 128, 3, 1, "same", activation, kernel_init)
+    conv_t1 = conv_tranpose_kreas(resid3, 64, 3, 2, "same", activation, kernel_init)
+    conv_t2 = conv_tranpose_kreas(conv_t1, 32, 3, 2, "same", activation, kernel_init)
+    conv_t3 = conv_tranpose_kreas(conv_t2, 3, 9, 1, "same", None, kernel_init)
+    preds = tf.nn.tanh(conv_t3) * 150 + 255. / 2
+    return preds
 
 
 WEIGHTS_INIT_STDEV = .1
@@ -90,14 +113,14 @@ def _residual_block(net, filter_size=3):
 
 
 def _instance_norm(net, train=True):
-    tf.nn.batch_normalization
+    tf.nn.batch_normalization()
     batch, rows, cols, channels = [i.value for i in net.get_shape()]
     var_shape = [channels]
     mu, sigma_sq = tf.nn.moments(net, [1, 2], keep_dims=True)
     shift = tf.Variable(tf.zeros(var_shape))
     scale = tf.Variable(tf.ones(var_shape))
     epsilon = 1e-3
-    normalized = (net - mu) / (sigma_sq + epsilon) ** (.5)
+    normalized = (net - mu) / (sigma_sq + epsilon) ** .5
     return scale * normalized + shift
 
 

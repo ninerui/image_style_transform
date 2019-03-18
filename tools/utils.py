@@ -1,24 +1,19 @@
 import os
-import sys
 
 import cv2
-import numpy as np
-import scipy.misc
 
-# def get_img(src):
-#     image = cv2.imread(src)
-#     assert image is not None
-#     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-#     return image
 
 def get_img(src, img_size=False):
-   img = scipy.misc.imread(src, mode='RGB') # misc.imresize(, (256, 256, 3))
-   if not (len(img.shape) == 3 and img.shape[2] == 3):
-       img = np.dstack((img,img,img))
-       print (img.shape)
-   if img_size != False:
-       img = scipy.misc.imresize(img, img_size)
-   return img
+    """
+    读取单张图片
+    :param src: 图片路径
+    :param img_size: 图片的大小, ex:(256, 256)
+    :return: 图片的矩阵
+    """
+    img = cv2.imread(src)
+    if img_size:
+        img = cv2.resize(img, img_size)
+    return img
 
 
 def list_files(in_path):
@@ -30,15 +25,42 @@ def list_files(in_path):
     return files
 
 
-def _get_files(img_dir):
+def get_files(img_dir):
     files = list_files(img_dir)
-    # count = 0
-    # res = []
-    # for i in files:
-    #     a = os.path.join(img_dir, i)
-    #     if cv2.imread(a).shape[2] == 3:
-    #         res.append(a)
-    #     sys.stdout.write("\r{}".format(count))
-    #     count += 1
     return [os.path.join(img_dir, x) for x in files]
-    # return res
+
+
+def get_learning_rate_from_file(filename, epoch):
+    """
+    从文件获取学习率
+    :param filename: 文件名
+    :param epoch: epoch
+    :return:
+    """
+    learning_rate = 0.01
+    with open(filename, 'r') as f:
+        for line in f.readlines():
+            line = line.split('#', 1)[0]
+            if line:
+                par = line.strip().split(':')
+                e = int(par[0])
+                if par[1] == '-':
+                    lr = -1
+                else:
+                    lr = float(par[1])
+                if e <= epoch:
+                    learning_rate = lr
+                else:
+                    return learning_rate
+
+
+def write_arguments_to_file(args, filename):
+    with open(filename, 'w') as f:
+        try:
+            data = args.get_all_member()
+            for key, value in data.items():
+                if not callable(key) and not key.startswith("__") and not key.startswith("get_all_member"):
+                    f.write('%s: %s\n' % (key, str(value)))
+        except AttributeError:
+            for key, value in vars(args).items():
+                f.write('%s: %s\n' % (key, str(value)))
