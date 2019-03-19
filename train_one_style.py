@@ -44,8 +44,8 @@ def main():
         content_features[CONTENT_LAYER] = content_net[CONTENT_LAYER]
 
         # 经过生成网络获取生成的图片
-        # preds = model_net.transform_net(x_content / 255.0)
-        preds = model_net.transform_net_keras(x_content / 255.)
+        preds = model_net.transform_net(x_content / 255.)
+        # preds = model_net.transform_net_keras(x_content / 255.)
         preds_pre = vgg_tool.preprocess(preds)
         net = vgg_tool.net(args.vgg_path, preds_pre)  # 经过生成网络
 
@@ -77,10 +77,10 @@ def main():
         tv_loss = args.tv_weight * 2 * (x_tv / tv_x_size + y_tv / tv_y_size) / args.batch_size
 
         loss = content_loss + style_loss + tv_loss
+        tf.summary.scalar('losses/total_loss', loss)
         tf.summary.scalar('losses/content_loss', content_loss)
         tf.summary.scalar('losses/style_loss', style_loss)
         tf.summary.scalar('losses/tv_loss', tv_loss)
-        tf.summary.scalar('losses/total_loss', loss)
         tf.summary.scalar('learning_rate', learning_rate)
 
         train_step = tf.train.AdamOptimizer(learning_rate).minimize(loss)
@@ -110,11 +110,10 @@ def main():
                 lr = args.learning_rate
             else:
                 lr = utils.get_learning_rate_from_file(args.learning_rate_file, epoch)
-
             if lr <= 0:
                 return False
             batch_number = 0
-            while batch_number <= args.epoch_size:
+            while batch_number < args.epoch_size:
                 start_time = time.time()
                 curr = file_count * args.batch_size
                 step = curr + args.batch_size
@@ -134,12 +133,12 @@ def main():
                     loss_, _ = sess.run([loss, train_step], feed_dict=feed_dict)
                 run_time = time.time() - start_time
                 sys.stdout.write(
-                    "\repoch: {:d}\tglobal_step: {:d}\ttotal_loss: {:f}\trun_time: {:f}".format(
-                        epoch, global_step, loss_, run_time))
+                    "\repoch: {:d}\tglobal_step: {:d}\ttotal_loss: {:f}\tlr: {}\trun_time: {:f}".format(
+                        epoch, global_step, loss_, lr, run_time))
                 file_count += 1
                 batch_number += 1
                 global_step += 1
-            print("save model...")
+            print("\t\tsave model...")
             checkpoint_path = os.path.join(model_dir, 'model-%s.ckpt' % args.style_name)
             saver.save(sess, checkpoint_path, global_step=global_step, write_meta_graph=False)
             metagraph_filename = os.path.join(model_dir, 'model-%s.meta' % args.style_name)

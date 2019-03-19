@@ -113,7 +113,7 @@ def _residual_block(net, filter_size=3):
 
 
 def _instance_norm(net, train=True):
-    tf.nn.batch_normalization()
+    # tf.nn.batch_normalization()
     batch, rows, cols, channels = [i.value for i in net.get_shape()]
     var_shape = [channels]
     mu, sigma_sq = tf.nn.moments(net, [1, 2], keep_dims=True)
